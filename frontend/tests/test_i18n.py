@@ -5,7 +5,7 @@ import string
 
 import pytest
 
-from i18n import STRINGS, days_left, short_date, t
+from i18n import STRINGS, count, days_left, short_date, t
 
 HEBREW = re.compile(r"[֐-׿]")
 
@@ -49,3 +49,10 @@ def test_t_fills_placeholders():
 
 def test_short_date_is_day_first():
     assert short_date("2026-11-04") == "4/11"
+
+
+def test_count_words_the_singular():
+    assert count(1, "plants", "en") == "1 plant"
+    assert count(3, "plants", "en") == "3 plants"
+    assert count(1, "plants", "he") == "צמח אחד"
+    assert count(2, "thirsty", "he") == "2 צמחים צריכים השקיה"

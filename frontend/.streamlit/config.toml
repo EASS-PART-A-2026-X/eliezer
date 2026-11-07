@@ -4,3 +4,29 @@ gatherUsageStats = false  # Streamlit collects usage stats unless you opt out
 [server]
 headless = true
 address = "localhost"  # only this machine; the container overrides it
+
+[client]
+toolbarMode = "minimal"  # hide developer options from gardeners
+
+# Eliezer's colours: leaf green, terracotta orange, white.
+# Green is the primary colour because white text on it passes WCAG AA.
+[theme]
+base = "light"
+primaryColor = "#2E7D32"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F1F7F1"
+textColor = "#1C2B20"
+linkColor = "#C2410C"
+borderColor = "#DCE7DD"
+showWidgetBorder = true
+baseRadius = "0.75rem"
+buttonRadius = "full"
+greenColor = "#2E7D32"
+greenBackgroundColor = "#E6F2E7"
+greenTextColor = "#1B5E20"
+orangeColor = "#E8710A"
+orangeBackgroundColor = "#FFEEDD"
+orangeTextColor = "#9A3412"
+redColor = "#C62828"
+redBackgroundColor = "#FDECEA"
+redTextColor = "#B71C1C"

@@ -40,7 +40,7 @@ browser
 
 Only the backend reads or writes the database. The frontend never calls the AI service or the database, and the AI service never opens the database: it returns candidates that the backend validates before anything is saved. PostgreSQL and Ollama are infrastructure, not application services.
 
-**Why Streamlit:** one language (Python) across all three services and the course's tested patterns; the cost is less layout control, so right-to-left Hebrew is done with injected CSS.
+**Why Streamlit:** one language (Python) across all three services and the course's tested patterns; the cost is less layout control, so right-to-left Hebrew, the card grid and tap-to-open cards are done with injected CSS (`frontend/style.py`), aimed at the `st-key-*` classes Streamlit gives keyed elements. Theme colours (green, orange, white) live in `frontend/.streamlit/config.toml`.
 
 ---
 
@@ -101,8 +101,8 @@ Every command runs offline, with no API key and no model calls.
 |---|---|---|
 | backend | `uv run pytest` | catalog search (EN/HE/Latin), status codes, garden countdown with a frozen clock, watering, photos and upload checks, identify matching, retry policy, AI care validated and stored, restart persistence, seed, catalog files, contract |
 | ai-service | `uv run pytest` | demo mode, identify and care validators (each forces a retry), 422/429/500/502/504 mapping, tools, no photo or text in logs, eval harness |
-| frontend | `uv run pytest` | AppTest flows in both languages, RTL CSS, watering, care request, identify → add (including new catalog plants), search → add, friendly errors, lost reply; UI → `api.py` boundary; i18n keys and placeholders |
-| frontend (browser) | `uv run pytest e2e --base-url http://localhost:8501 --browser-channel chrome` | needs the running stack: search → add → reload → water → remove; Hebrew toggle → RTL. Without Chrome: `uv run playwright install chromium` and drop `--browser-channel chrome` |
+| frontend | `uv run pytest` | AppTest flows in both languages: plant cards (photo or placeholder) open a details modal, RTL CSS, watering, care request, adding a photo later, remove with confirmation, identify → add (including new catalog plants), one-tap search → add, friendly errors, lost reply; UI → `api.py` boundary; i18n keys and placeholders |
+| frontend (browser) | `uv run pytest e2e --base-url http://localhost:8501 --browser-channel chrome` | needs the running stack: search → add → details modal → nickname → reload → tap the card → water → remove; Hebrew toggle → RTL; phone width shows 2 cards per row with no sideways scrolling. Without Chrome: `uv run playwright install chromium` and drop `--browser-channel chrome` |
 | lint (each service) | `uv run ruff check . && uv run ruff format --check .` | |
 | evaluation | `uv run python -m evals.run_evals` (in `ai-service/`) | see [Evaluation results](#evaluation-results) |
 | whole repo | `scripts/clean-checkout.sh` (repo root, committed work only) | fresh clone → Compose → smoke test → all tests |

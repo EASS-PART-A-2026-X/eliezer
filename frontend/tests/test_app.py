@@ -1,17 +1,28 @@
 """AppTest runs streamlit_app.py in-process; respx fakes every backend call."""
 
+import io
 import json
 
 import httpx
 import pytest
 import respx
+from PIL import Image
 from streamlit.testing.v1 import AppTest
 
 from api import BACKEND_URL as BASE  # the URL api.py really calls
 from i18n import RTL_CSS
 
 APP = "../streamlit_app.py"  # resolved relative to THIS test file
-JPEG = b"\xff\xd8\xff\xe0fake-jpeg-bytes"
+
+
+def tiny_jpeg() -> bytes:
+    """A real JPEG: st.image decodes what it shows."""
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 6), (46, 125, 50)).save(buffer, "JPEG")
+    return buffer.getvalue()
+
+
+JPEG = tiny_jpeg()
 
 ROSEMARY = {
     "id": 1,
@@ -68,62 +79,114 @@ def start_app(backend, garden: list[dict], lang: str = "English") -> AppTest:
     return at.run()
 
 
+def open_details(at: AppTest, gid: int) -> AppTest:
+    """Tap a card: its details open in a modal."""
+    return at.button(key=f"open-{gid}").click().run()
+
+
+def text(at: AppTest) -> str:
+    return " ".join(m.value for m in at.markdown)
+
+
+def cards(at: AppTest) -> list[str]:
+    return [b.label for b in at.button if b.key.startswith("open-")]
+
+
 # --- my garden -----------------------------------------------------------------------
 def test_empty_garden(backend):
     at = start_app(backend, [])
     assert not at.exception
-    assert "Your garden is empty" in at.info[0].value
+    assert "Your garden is empty" in text(at)
+    assert cards(at) == []
 
 
-def test_garden_shows_days_left_in_english(backend):
+def test_garden_cards_show_days_left_most_urgent_first(backend):
     garden = [
-        garden_item(5, FIG, -2, nickname="Big fig"),
+        garden_item(5, FIG, -2, nickname="Big fig", location="Back yard"),
         garden_item(6, ROSEMARY, 3),
     ]
     at = start_app(backend, garden)
     assert not at.exception
-    assert [e.label for e in at.expander] == [
-        "🔴 Big fig \\(Fig\\) — 2 days overdue",
-        "🟢 Rosemary — water in 3 days",
-    ]
+    assert cards(at) == ["Open Big fig", "Open Rosemary"]
+    page = text(at)
+    assert ":red-badge[:material/warning: 2 days overdue]" in page
+    assert ":green-badge[:material/check_circle: water in 3 days]" in page
+    assert "1 plant needs water" in page
+    assert "Back yard" in " ".join(c.value for c in at.caption)
+
+
+def test_card_shows_the_photo_or_a_placeholder(backend):
+    photo = backend.get("/garden/6/photo").mock(
+        return_value=httpx.Response(200, content=JPEG)
+    )
+    no_photo = backend.get("/garden/5/photo")
+    garden = [garden_item(5, FIG, 4), garden_item(6, ROSEMARY, 3, has_photo=True)]
+    at = start_app(backend, garden)
+    assert not at.exception
+    assert photo.called
+    assert not no_photo.called  # has_photo is false: the placeholder needs no call
+
+
+def test_a_broken_photo_does_not_break_the_page(backend):
+    backend.get("/garden/6/photo").mock(return_value=httpx.Response(500))
+    at = start_app(backend, [garden_item(6, ROSEMARY, 3, has_photo=True)])
+    assert not at.exception
+    assert not at.error
+    assert cards(at) == ["Open Rosemary"]
 
 
 def test_hebrew_switches_text_and_direction(backend):
     at = start_app(backend, [garden_item(6, ROSEMARY, 0)], lang="עברית")
     assert not at.exception
-    assert at.title[0].value == "אליעזר — מאסטר הגינה שלך"
-    assert at.expander[0].label == "💧 רוזמרין — להשקות היום"
+    assert at.title[0].value == "אליעזר"
+    assert cards(at) == ["פתיחת רוזמרין"]
+    assert "להשקות היום" in text(at)
     assert any(RTL_CSS in h.value for h in at.html)
     english = start_app(backend, [garden_item(6, ROSEMARY, 0)])
     assert not any("direction: rtl" in h.value for h in english.html)
 
 
+def test_tapping_a_card_opens_its_details(backend):
+    at = start_app(backend, [garden_item(6, ROSEMARY, 3, location="Herb bed")])
+    assert "Water weekly" not in text(at)  # care lives in the modal
+    open_details(at, 6)
+    assert not at.exception
+    assert at.session_state["open_plant"] == 6
+    page = text(at)
+    assert "1. Water weekly\\." in page  # numbered, with Markdown escaped
+    assert "Salvia rosmarinus" in page
+    assert at.button(key="water-6").label == "I watered it"
+
+
 def test_care_steps_follow_the_language(backend):
-    at = start_app(backend, [garden_item(6, ROSEMARY, 3)], lang="עברית")
-    text = " ".join(m.value for m in at.markdown)
-    assert "השקו פעם בשבוע" in text
-    assert "Water weekly" not in text
+    at = open_details(
+        start_app(backend, [garden_item(6, ROSEMARY, 3)], lang="עברית"), 6
+    )
+    assert "השקו פעם בשבוע" in text(at)
+    assert "Water weekly" not in text(at)
 
 
-def test_water_button_restarts_the_countdown(backend):
+def test_water_button_restarts_the_countdown_and_closes_the_details(backend):
     post = backend.post("/garden/6/water").mock(
         return_value=httpx.Response(200, json=garden_item(6, ROSEMARY, 7))
     )
-    at = start_app(backend, [garden_item(6, ROSEMARY, -1)])
+    at = open_details(start_app(backend, [garden_item(6, ROSEMARY, -1)]), 6)
     at.button(key="water-6").click().run()
     assert post.called
-    assert at.success[0].value == "Watered Rosemary. Next watering in 7 days."
+    assert at.toast[0].value == "Watered Rosemary. Next watering in 7 days."
+    assert "open_plant" not in at.session_state
 
 
 def test_missing_care_can_be_requested_from_the_ai(backend):
     care = backend.post("/plants/2/care").mock(
         return_value=httpx.Response(200, json={**FIG, "care_source": "ai"})
     )
-    at = start_app(backend, [garden_item(5, FIG, 4)])
+    at = open_details(start_app(backend, [garden_item(5, FIG, 4)]), 5)
     assert "No care instructions yet." in [c.value for c in at.caption]
     at.button(key="care-5").click().run()
     assert care.called
-    assert at.success[0].value == "Care instructions for Fig are ready."
+    assert at.toast[0].value == "Care instructions for Fig are ready."
+    assert at.session_state["open_plant"] == 5  # stays open to show the new care
 
 
 @pytest.mark.parametrize(
@@ -140,7 +203,7 @@ def test_care_errors_are_friendly(backend, status, message):
     backend.post("/plants/2/care").mock(
         return_value=httpx.Response(status, json={"detail": "x"})
     )
-    at = start_app(backend, [garden_item(5, FIG, 4)])
+    at = open_details(start_app(backend, [garden_item(5, FIG, 4)]), 5)
     at.button(key="care-5").click().run()
     assert not at.exception
     assert at.error[0].value == message
@@ -150,7 +213,7 @@ def test_edit_sends_only_the_form_fields(backend):
     patch = backend.patch("/garden/6").mock(
         return_value=httpx.Response(200, json=garden_item(6, ROSEMARY, 3))
     )
-    at = start_app(backend, [garden_item(6, ROSEMARY, 3)])
+    at = open_details(start_app(backend, [garden_item(6, ROSEMARY, 3)]), 6)
     at.text_input(key="nick-6").input("By the gate")
     at.number_input(key="every-6").set_value(10)
     at.button(key="save-6").click().run()
@@ -159,6 +222,7 @@ def test_edit_sends_only_the_form_fields(backend):
         "location": "",
         "watering_interval_days": 10,
     }
+    assert at.toast[0].value == "Saved Rosemary."
 
 
 def test_validation_errors_are_shown_in_words(backend):
@@ -171,7 +235,7 @@ def test_validation_errors_are_shown_in_words(backend):
     backend.patch("/garden/6").mock(
         return_value=httpx.Response(422, json={"detail": detail})
     )
-    at = start_app(backend, [garden_item(6, ROSEMARY, 3)])
+    at = open_details(start_app(backend, [garden_item(6, ROSEMARY, 3)]), 6)
     at.button(key="save-6").click().run()
     assert not at.exception
     assert at.error[0].value == (
@@ -179,9 +243,31 @@ def test_validation_errors_are_shown_in_words(backend):
     )
 
 
+def test_a_photo_can_be_added_later(backend):
+    put = backend.put("/garden/6/photo").mock(return_value=httpx.Response(204))
+    at = open_details(start_app(backend, [garden_item(6, ROSEMARY, 3)]), 6)
+    assert at.button(key="save-photo-6").disabled  # nothing chosen yet
+    at.file_uploader(key="new-photo-6-0").upload("bush.jpg", JPEG, "image/jpeg").run()
+    at.button(key="save-photo-6").click().run()
+    assert put.called and JPEG in put.calls.last.request.content
+    assert at.toast[0].value == "Saved the photo of Rosemary."
+    assert at.session_state["open_plant"] == 6
+
+
+def test_remove_asks_first_then_deletes(backend):
+    delete = backend.delete("/garden/6").mock(return_value=httpx.Response(204))
+    at = open_details(start_app(backend, [garden_item(6, ROSEMARY, 3)]), 6)
+    assert "Remove Rosemary from your garden?" in text(at)
+    assert not delete.called
+    at.button(key="delete-6").click().run()
+    assert delete.called
+    assert at.toast[0].value == "Removed Rosemary."
+    assert "open_plant" not in at.session_state
+
+
 def test_lost_reply_after_watering_says_outcome_unknown(backend):
     backend.post("/garden/6/water").mock(side_effect=httpx.ReadTimeout("no reply"))
-    at = start_app(backend, [garden_item(6, ROSEMARY, 3)])
+    at = open_details(start_app(backend, [garden_item(6, ROSEMARY, 3)]), 6)
     at.button(key="water-6").click().run()
     assert not at.exception
     assert "may have been saved" in at.error[0].value
@@ -229,7 +315,7 @@ IDENTIFIED = {
 def identify_photo(backend, reply: httpx.Response) -> AppTest:
     backend.post("/plants/identify").mock(return_value=reply)
     at = start_app(backend, [])
-    at.file_uploader(key="upload").upload("leaf.jpg", JPEG, "image/jpeg")
+    at.file_uploader(key="upload-0").upload("leaf.jpg", JPEG, "image/jpeg")
     return at.button(key="identify").click().run()
 
 
@@ -243,23 +329,32 @@ def test_identify_shows_candidates_and_demo_note(backend):
     at = identify_photo(backend, httpx.Response(200, json=IDENTIFIED))
     assert not at.exception
     assert at.warning[0].value.startswith("Demo mode")
-    labels = at.radio(key="candidate").options
-    assert labels[0].startswith("Rosemary — *Salvia rosmarinus* (60% sure)")
-    assert "new to the plant database" in labels[1]
+    candidates = at.radio(key="candidate")
+    assert candidates.options == ["Rosemary", "Monstera"]
+    captions = list(candidates.proto.captions)
+    assert captions[0] == "*Salvia rosmarinus* · 60% sure"
+    assert "new to the plant database" in captions[1]
 
 
-def test_adding_a_known_candidate_uploads_the_photo(backend):
-    added = garden_item(9, ROSEMARY, 7)
+def test_adding_a_known_candidate_uploads_the_photo_and_shows_it(backend):
+    added = garden_item(9, ROSEMARY, 7, has_photo=True)
     post = backend.post("/garden").mock(return_value=httpx.Response(201, json=added))
     put = backend.put("/garden/9/photo").mock(return_value=httpx.Response(204))
+    backend.get("/garden/9/photo").mock(return_value=httpx.Response(200, content=JPEG))
     at = identify_photo(backend, httpx.Response(200, json=IDENTIFIED))
+    backend.get("/garden").mock(return_value=httpx.Response(200, json=[added]))
     at.button(key="photo-add").click().run()
     assert json.loads(post.calls.last.request.content) == {
         "plant_id": 1,
         "nickname": None,
     }
     assert put.called and JPEG in put.calls.last.request.content
-    assert at.success[0].value == "Added Rosemary to your garden."
+    assert at.toast[0].value == "Added Rosemary to your garden."
+    # The new plant's details open on top of My garden; the photo form is reset.
+    assert at.session_state["open_plant"] == 9
+    assert at.session_state["tabs-en"].endswith("My garden")
+    assert at.button(key="water-9")
+    assert at.file_uploader(key="upload-1").value is None
 
 
 def test_adding_an_unknown_candidate_creates_the_catalog_entry_first(backend):
@@ -285,7 +380,7 @@ def test_adding_an_unknown_candidate_creates_the_catalog_entry_first(backend):
         "name_en": "Monstera",
         "name_he": "מונסטרה",
     }
-    assert at.success[0].value == "Added Monstera to your garden."
+    assert at.toast[0].value == "Added Monstera to your garden."
 
 
 def test_not_a_plant(backend):
@@ -311,30 +406,29 @@ def test_short_search_shows_a_hint(backend):
     assert "Type at least 2 letters." in [c.value for c in at.caption]
 
 
-def test_search_and_add(backend):
+def test_search_and_add_with_one_tap(backend):
     search = backend.get("/plants").mock(
         return_value=httpx.Response(200, json=[ROSEMARY, FIG])
     )
     post = backend.post("/garden").mock(
-        return_value=httpx.Response(
-            201, json=garden_item(11, FIG, 7, nickname="Old fig")
-        )
+        return_value=httpx.Response(201, json=garden_item(11, FIG, 7))
     )
-    at = start_app(backend, [], lang="עברית")
+    at = start_app(backend, [garden_item(6, ROSEMARY, 3)], lang="עברית")
     at.text_input(key="search-q").input("תאנה").run()
     assert search.calls.last.request.url.params["q"] == "תאנה"
-    assert at.selectbox(key="search-choice").options == [
-        "רוזמרין — Salvia rosmarinus",
-        "תאנה — Ficus carica",
+    assert [b.key for b in at.button if b.key.startswith("search-add-")] == [
+        "search-add-1",
+        "search-add-2",
     ]
-    at.selectbox(key="search-choice").set_value(2)
-    at.text_input(key="search-nickname").input("Old fig")
-    at.button(key="search-add").click().run()
+    page = text(at)
+    assert "**רוזמרין**" in page and "Ficus carica" in page
+    assert page.count("כבר בגינה") == 1  # rosemary is already planted
+    at.button(key="search-add-2").click().run()
     assert json.loads(post.calls.last.request.content) == {
         "plant_id": 2,
-        "nickname": "Old fig",
+        "nickname": None,
     }
-    assert at.success[0].value == "Old fig \\(תאנה\\) נוסף לגינה שלך."
+    assert at.toast[0].value == "תאנה נוסף לגינה שלך."
 
 
 def test_search_without_results(backend):
