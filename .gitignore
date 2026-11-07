@@ -7,8 +7,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
-# Local SQLite data (Compose keeps it in the backend-data volume)
-data/
+# Local SQLite data from running the backend without Compose (Compose uses Postgres)
+/backend/data/
 *.db
 
 # Playwright artifacts

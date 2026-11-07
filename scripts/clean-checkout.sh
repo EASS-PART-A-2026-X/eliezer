@@ -50,8 +50,9 @@ docker compose -p "$project" up --build --wait --wait-timeout 180
 check() { curl --fail --silent --show-error --output /dev/null "$@"; }
 check "http://localhost:$BACKEND_PORT/health"
 check "http://localhost:$FRONTEND_PORT/_stcore/health"
-check -X POST "http://localhost:$BACKEND_PORT/items/from-text" \
-  -H "Content-Type: application/json" -d '{"text": "URGENT: send the report"}'
+check "http://localhost:$BACKEND_PORT/plants?q=rosemary"
+check -F "photo=@ai-service/evals/images/rosemary.jpg;type=image/jpeg" \
+  "http://localhost:$BACKEND_PORT/plants/identify"
 
 for service in backend ai-service frontend; do
   (cd "$service" && uv sync --locked --quiet && uv run pytest --quiet)

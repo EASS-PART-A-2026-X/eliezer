@@ -18,14 +18,15 @@ The course asks for a one-page product sketch (Lecture 1). Fill these in before 
 
 | Decision | Value |
 |---|---|
-| Domain (one narrow area, e.g. "save and adapt recipes", not "a food platform") | **TODO** |
-| Purpose: the need, and the bad situation it prevents | **TODO** |
-| Operational principle: "after *someone* does *A*, then *B*; afterwards *C* holds" | **TODO** |
-| Three user stories: "As a *user*, I can *action* so that *benefit*" | **TODO** |
-| Main record: 4–6 fields, each with a type and a limit | **TODO** |
-| AI service job: one job with structured output (e.g. messy text in, record out) | **TODO** |
+| Domain (one narrow area, e.g. "save and adapt recipes", not "a food platform") | **Eliezer — your garden master:** manage the plants in your own garden and when to water them |
+| Purpose: the need, and the bad situation it prevents | Plants die because nobody remembers when each was last watered or what it needs; care advice is scattered and often only in English |
+| Operational principle: "after *someone* does *A*, then *B*; afterwards *C* holds" | After I photograph a plant and confirm what Eliezer identified, it appears in my garden with a watering countdown and care steps; after I press "I watered it", the countdown starts again, and it is still there tomorrow |
+| Three user stories: "As a *user*, I can *action* so that *benefit*" | Identify a plant from a photo; add a plant by Hebrew/English/Latin name; see days left until watering and mark it watered (plus: switch the UI to Hebrew) — see README |
+| Main record: 4–6 fields, each with a type and a limit | `GardenPlant`: `plant_id` (catalog FK), `nickname` (≤100), `location` (≤100), `watering_interval_days` (1–60), `last_watered_at` (UTC); catalog `Plant` with EN/HE names and care |
+| AI service job: one job with structured output (e.g. messy text in, record out) | Photo → up to 3 candidate species (EN/HE names, confidence); plant names → care guide (interval, sunlight, EN + HE steps). Gemma 4 E2B via Ollama; demo stand-in when `AI_MODEL=test` |
 | Individual or pair (each student still explains their own work) | **TODO** |
-| Frontend framework (Streamlit is the course default; React is allowed) | **TODO** |
+| Frontend framework (Streamlit is the course default; React is allowed) | Streamlit, with an English/Hebrew toggle and right-to-left CSS |
+| Database | PostgreSQL 18 as the `db` Compose service (infrastructure); the backend image defaults to SQLite for the standalone EX1 check |
 
 The operational principle is replayed by the Lecture 5 end-to-end test and in the final demo, so choose one you can demonstrate.
 

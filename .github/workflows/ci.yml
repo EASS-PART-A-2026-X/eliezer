@@ -52,12 +52,20 @@ jobs:
       - run: docker compose up --build --wait --wait-timeout 180
       - name: Smoke test
         run: |
-          curl --fail --silent --show-error http://localhost:8000/health
+          set -euo pipefail
+          api=http://localhost:8000
+          curl --fail --silent --show-error "$api/health"
           curl --fail --silent --show-error http://localhost:8501/_stcore/health
-          curl --fail --silent --show-error -X POST \
-            -H "Content-Type: application/json" \
-            -d '{"text": "URGENT: send the quarterly report"}' \
-            http://localhost:8000/items/from-text
+          # The catalog is seeded and searchable in English and Hebrew.
+          plant_id=$(curl --fail --silent --show-error "$api/plants?q=rosemary" | jq -e '.[0].id')
+          curl --fail --silent --show-error -G "$api/plants" --data-urlencode "q=רוזמרין" | jq -e 'length > 0'
+          # Add to the garden, then water it.
+          garden_id=$(curl --fail --silent --show-error -X POST "$api/garden" \
+            -H "Content-Type: application/json" -d "{\"plant_id\": $plant_id}" | jq -e '.id')
+          curl --fail --silent --show-error -X POST "$api/garden/$garden_id/water" | jq -e '.days_until_watering == 7'
+          # Identify a photo (demo mode) and match it to the catalog.
+          curl --fail --silent --show-error -F "photo=@ai-service/evals/images/rosemary.jpg;type=image/jpeg" \
+            "$api/plants/identify" | jq -e '.model == "demo" and .candidates[0].plant_id != null'
       - if: failure()
         run: docker compose logs
       - if: always()
