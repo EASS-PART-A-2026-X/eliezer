@@ -1,0 +1,19 @@
+[project]
+name = "eliezer-frontend"
+version = "0.1.0"
+description = "Streamlit UI; talks only to the backend's HTTP API"
+requires-python = ">=3.14,<3.15"
+dependencies = ["streamlit==1.66.0", "httpx==0.28.1"]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "pytest-playwright>=0.10.0",
+    "respx==0.23.1",
+    "ruff>=0.17.4",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]  # e2e/ needs a running stack: run it explicitly
+filterwarnings = ["error"]
