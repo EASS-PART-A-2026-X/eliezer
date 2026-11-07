@@ -120,7 +120,10 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "127.0.0.1:${FRONTEND_PORT:-8501}:8501"
+      # 127.0.0.1 = this computer only. FRONTEND_BIND=0.0.0.0 in .env lets phones on
+      # your network open it too (there is no login: anyone on that network can).
+      # Only the frontend: Streamlit calls the backend inside Docker.
+      - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-8501}:8501"
     environment:
       BACKEND_URL: http://backend:8000 # Streamlit calls the API server-side
     depends_on:

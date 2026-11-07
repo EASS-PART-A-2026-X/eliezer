@@ -42,7 +42,7 @@ def test_bad_uploads_are_422_in_the_usual_shape(client, catalog):
         (b"", "empty.png"),
         (b"not an image at all", "fake.png"),
         (image_bytes("GIF"), "anim.gif"),  # decodes, but not an allowed format
-        (b"x" * (5 * 1024 * 1024 + 1), "huge.png"),
+        (b"x" * (15 * 1024 * 1024 + 1), "huge.png"),
     ):
         r = upload(client, gid, data, name)
         assert r.status_code == 422, name
@@ -62,6 +62,16 @@ def test_deleting_the_plant_deletes_its_photo(client, session, catalog):
     from app.models import GardenPhoto
 
     assert session.get(GardenPhoto, gid) is None
+
+
+def test_a_big_phone_photo_is_accepted_and_shrunk():
+    # 48 megapixels, like some phones save; mild noise gives a ~9 MB JPEG.
+    photo = BytesIO()
+    noise = Image.effect_noise((8000, 6000), 12).convert("RGB")
+    noise.save(photo, format="JPEG", quality=70)
+    assert 5 * 1024 * 1024 < len(photo.getvalue()) <= 15 * 1024 * 1024
+    out = Image.open(BytesIO(to_jpeg(photo.getvalue(), 1024)))
+    assert max(out.size) == 1024
 
 
 def test_to_jpeg_strips_metadata_and_rejects_bombs():

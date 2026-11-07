@@ -436,3 +436,24 @@ def test_search_without_results(backend):
     at = start_app(backend, [])
     at.text_input(key="search-q").input("zzz").run()
     assert at.info[-1].value == "No plants match “zzz”."
+
+
+@pytest.mark.parametrize(
+    ("url", "switch_shown"),
+    [
+        (None, True),  # this computer (AppTest has no URL)
+        ("http://localhost:8501/", True),
+        ("https://garden.example/", True),
+        ("http://10.100.102.187:8501/", False),  # a phone on the Wi-Fi
+    ],
+)
+def test_live_camera_switch_only_where_browsers_allow_it(
+    backend, monkeypatch, url, switch_shown
+):
+    import streamlit as st
+
+    monkeypatch.setattr(type(st.context), "url", property(lambda self: url))
+    at = start_app(backend, [])
+    assert not at.exception
+    assert any(t.key == "use-camera" for t in at.toggle) is switch_shown
+    assert at.file_uploader(key="upload-0")  # the phone's way to take a photo

@@ -367,11 +367,20 @@ def add_candidate(candidate: dict, photo: dict) -> None:
     plant_added(added)
 
 
+def live_camera_allowed() -> bool:
+    """Browsers allow the live camera only on HTTPS pages or on this computer. A
+    phone on the Wi-Fi (plain http://<IP>) uses the upload button instead, which
+    offers the phone's own camera."""
+    url = st.context.url or "http://localhost"
+    host = url.split("://", 1)[-1].split("/", 1)[0].rsplit(":", 1)[0].strip("[]")
+    return url.startswith("https://") or host in ("localhost", "127.0.0.1", "::1")
+
+
 with photo_tab:
     st.caption(tr("photo_intro"))
     version = st.session_state.get("upload_version", 0)  # new key = empty widgets
     camera = None
-    if st.toggle(tr("use_camera"), key="use-camera"):
+    if live_camera_allowed() and st.toggle(tr("use_camera"), key="use-camera"):
         camera = st.camera_input(tr("camera"), key=f"camera-{version}")
     upload = st.file_uploader(tr("upload"), type=PHOTO_TYPES, key=f"upload-{version}")
     photo_file = camera or upload

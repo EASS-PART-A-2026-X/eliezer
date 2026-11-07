@@ -61,6 +61,7 @@ cp .env.example .env   # optional: the stack also starts without it (real model)
 | `OLLAMA_NUM_THREAD` | `.env` | `4` | CPU threads the model uses (see [Speed](#speed-on-a-laptop-cpu)) |
 | `GARDEN_REGION` | `.env` | `Israel (Mediterranean climate)` | region used in the AI instructions |
 | `BACKEND_PORT` / `FRONTEND_PORT` | `.env` | `8000` / `8501` | host ports, if the defaults are taken |
+| `FRONTEND_BIND` | `.env` | `127.0.0.1` | `0.0.0.0` opens the app to phones on your network (see [Use it from your phone](#use-it-from-your-phone)) |
 | `DATABASE_URL` | backend | Compose: Postgres; image/local default: `sqlite:///./data/app.db` | where data lives |
 | `AI_SERVICE_URL` / `BACKEND_URL` | backend / frontend | Compose service names | how services find each other |
 
@@ -76,6 +77,15 @@ docker compose up --build --wait
 - `docker compose down` stops everything and **keeps** your data (the `db-data` volume).
 - `docker compose down -v` **deletes** your garden, the AI-written care and the downloaded model. The next start reloads the catalog and demo garden, and downloads the model again.
 - Backup: `docker compose exec db pg_dump -U eliezer eliezer > backup.sql` · restore into a fresh stack: `docker compose exec -T db psql -U eliezer eliezer < backup.sql`
+
+### Use it from your phone
+
+1. In `.env`: `FRONTEND_BIND=0.0.0.0`, then `docker compose up -d`. Only the app (port 8501) opens to your network; the API, the AI service and the database stay closed.
+2. Find this computer's address on the Wi-Fi: `hostname -I` on Linux (the first one, e.g. `10.100.102.187`), `ipconfig getifaddr en0` on macOS, `ipconfig` on Windows.
+3. If a firewall is on, allow port 8501 from your network only. Ubuntu: `sudo ufw allow from 10.100.102.0/24 to any port 8501 proto tcp` (use your own network's first three numbers).
+4. On the phone, on the same Wi-Fi: `http://<that address>:8501`.
+
+There is no login: anyone on that Wi-Fi can open the app, so use it on a network you trust. Over plain `http://` phones do not allow the live camera, so the "Use my camera" switch is hidden there; the upload button offers the phone's camera instead.
 
 ### Run the backend alone (EX1 check, SQLite)
 
@@ -134,7 +144,7 @@ uv run python -c "import json; from app.main import app; print(json.dumps(app.op
 
 | Call | Request | Success | Failures |
 |---|---|---|---|
-| backend `POST /plants/identify` | multipart `photo` (JPEG/PNG/WebP, ≤5 MB) | `200` candidates | `422` bad photo (no AI call) · `503` AI down, timed out, over budget or 5xx · `502` AI output broke the contract |
+| backend `POST /plants/identify` | multipart `photo` (JPEG/PNG/WebP, ≤15 MB, ≤60 megapixels) | `200` candidates | `422` bad photo (no AI call) · `503` AI down, timed out, over budget or 5xx · `502` AI output broke the contract |
 | backend `POST /plants/{id}/care` | — | `200` plant with care | `404` · `503` · `502` (nothing stored) |
 | ai-service `POST /identify` | `{image_b64, media_type}` | `200` `PlantIdentification` (+ `model`) | `422` · `429` usage limit · `502` invalid after retries · `504` timeout (150 s) · `500` provider failed or misconfigured |
 | ai-service `POST /care` | `{scientific_name, name_en, name_he}` | `200` `CareGuide` | same as above (timeout 200 s) |

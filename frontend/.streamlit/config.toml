@@ -4,6 +4,7 @@ gatherUsageStats = false  # Streamlit collects usage stats unless you opt out
 [server]
 headless = true
 address = "localhost"  # only this machine; the container overrides it
+maxUploadSize = 15  # MB, the backend's photo limit (phone photos are 5-8 MB)
 
 [client]
 toolbarMode = "minimal"  # hide developer options from gardeners
