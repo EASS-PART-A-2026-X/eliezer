@@ -1,130 +1,149 @@
-"""Score the extractor on evals/cases.yaml and print a results table.
+"""Score plant identification on evals/cases.yaml and print a results table.
 
-Default (AI_MODEL unset or "test"): a deterministic regex baseline stands in for
-the model, so this runs offline, for free, through the same agent code path.
-Label results from this mode as "regex baseline", never as model quality.
+Default (AI_MODEL unset or "test"): a fixed-answer baseline (always "rosemary")
+stands in for the model, so this runs offline, for free, through the same agent
+code path. Label those results "fixed-answer baseline", never model quality.
 
-Free local model (Ollama running on this machine):
-    AI_MODEL=ollama:<tag> OLLAMA_BASE_URL=http://localhost:11434/v1 \
+Local Gemma 4 through Ollama (Ollama >= 0.20.6 running, model pulled):
+    AI_MODEL=ollama:gemma4:e2b OLLAMA_BASE_URL=http://localhost:11434/v1 \
         uv run python -m evals.run_evals
-Hosted model (costs tokens):
-    AI_MODEL=openai:<model-id> OPENAI_API_KEY=... uv run python -m evals.run_evals
 """
 
-import json
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic_ai import ModelMessage, ModelResponse, ToolCallPart, UserPromptPart
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai import BinaryContent
 from pydantic_evals import Dataset, increment_eval_metric
 from pydantic_evals.evaluators import Evaluator, EvaluatorContext, IsInstance
 
-from app.agent import LIMITS, URGENCY, Deps, extract_agent
-from app.schemas import ItemExtraction
+from app.agents import (
+    DEMO_IDENTIFICATION,
+    HEBREW,
+    IDENTIFY_LIMITS,
+    Deps,
+    fixed_json_model,
+    identify_agent,
+)
+from app.schemas import IdentificationOutput
 
-CASES = Path(__file__).with_name("cases.yaml")
+HERE = Path(__file__).parent
+CASES = HERE / "cases.yaml"
+IMAGES = HERE / "images"
 MODEL = os.getenv("AI_MODEL", "test")
+
+
+def normalize(name: str) -> str:
+    return re.sub(r"\s+", " ", name.replace("×", " ")).strip().lower()
+
+
+def same_taxon(expected: str, got: str) -> bool:
+    """A one-word expected name is a genus: then the genus is enough."""
+    e, g = normalize(expected), normalize(got)
+    return g.split(" ")[0] == e if " " not in e else g == e
 
 
 # --- evaluators: one small, explainable check each -----------------------------
 @dataclass
-class TitleMatches(Evaluator):
-    """The expected key phrase is in the output title, and it is a title (short)."""
+class PlantDecision(Evaluator):
+    """Control flow: is_plant matches, and a non-plant gets no candidates."""
 
     def evaluate(self, ctx: EvaluatorContext) -> bool:
-        title = ctx.output.title.lower()
-        return ctx.expected_output.title.lower() in title and len(title) <= 60
+        if not ctx.metadata["is_plant"]:
+            return not ctx.output.is_plant and not ctx.output.candidates
+        return ctx.output.is_plant
 
 
 @dataclass
-class PriorityMatches(Evaluator):
+class Top1Species(Evaluator):
     def evaluate(self, ctx: EvaluatorContext) -> bool:
-        return ctx.output.priority == ctx.expected_output.priority
+        if not ctx.metadata["is_plant"]:
+            return not ctx.output.candidates
+        if not ctx.output.candidates:
+            return False
+        top = ctx.output.candidates[0].scientific_name
+        return any(same_taxon(name, top) for name in ctx.metadata["names"])
 
 
 @dataclass
-class TagOverlap(Evaluator):
-    """Jaccard similarity of output and expected tag sets (0.0-1.0)."""
+class InTop3(Evaluator):
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        if not ctx.metadata["is_plant"]:
+            return not ctx.output.candidates
+        return any(
+            same_taxon(name, c.scientific_name)
+            for c in ctx.output.candidates
+            for name in ctx.metadata["names"]
+        )
+
+
+@dataclass
+class GenusMatch(Evaluator):
+    """Score: 1.0 if the top candidate's genus is right (partial credit)."""
 
     def evaluate(self, ctx: EvaluatorContext) -> float:
-        got, want = set(ctx.output.tags), set(ctx.expected_output.tags)
-        if not got and not want:
-            return 1.0
-        return len(got & want) / len(got | want)
+        if not ctx.metadata["is_plant"]:
+            return 1.0 if not ctx.output.candidates else 0.0
+        if not ctx.output.candidates:
+            return 0.0
+        genus = normalize(ctx.output.candidates[0].scientific_name).split(" ")[0]
+        expected = {normalize(n).split(" ")[0] for n in ctx.metadata["names"]}
+        return 1.0 if genus in expected else 0.0
 
 
-def load_dataset() -> Dataset[str, ItemExtraction, dict]:
-    dataset = Dataset[str, ItemExtraction, dict].from_file(CASES)
+@dataclass
+class HebrewNames(Evaluator):
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        return all(HEBREW.search(c.name_he) for c in ctx.output.candidates)
+
+
+def load_dataset() -> Dataset[str, IdentificationOutput, dict]:
+    dataset = Dataset[str, IdentificationOutput, dict].from_file(CASES)
     for evaluator in (
-        IsInstance(type_name="ItemExtraction"),  # schema check
-        TitleMatches(),  # domain quality
-        PriorityMatches(),  # domain quality
-        TagOverlap(),  # domain quality, as a score
+        IsInstance(type_name="IdentificationOutput"),  # schema
+        PlantDecision(),  # control flow
+        Top1Species(),  # domain quality
+        InTop3(),  # domain quality
+        GenusMatch(),  # domain quality, as a score
+        HebrewNames(),  # language requirement
     ):
         dataset.add_evaluator(evaluator)
     return dataset
 
 
-# --- deterministic stand-in for a model -----------------------------------------
-URGENCY_WORDS = re.compile(r"\b(" + "|".join(URGENCY) + r")\b", re.IGNORECASE)
-TAG_HINTS = {
-    "errand": ("buy", "pick up"),
-    "work": ("report", "client", "team", "meeting"),
-    "idea": ("idea",),
-    "follow-up": ("call back", "follow up", "reply"),
-    "personal": ("dentist", "passport", "doctor"),
-}
-
-
-def regex_baseline(text: str) -> dict:
-    """A deliberately naive parser: the score a real model has to beat."""
-    first, _, rest = text.partition(":") if ":" in text else text.partition("\n")
-    hit = URGENCY_WORDS.search(text)
-    lower = text.lower()
-    return {
-        "title": first.strip(" -#")[:200] or "Untitled",
-        "description": rest.strip()[:5000],
-        "priority": URGENCY[hit[1].lower()] if hit else 3,
-        "tags": [
-            tag for tag, hints in TAG_HINTS.items() if any(h in lower for h in hints)
-        ],
-    }
-
-
-def baseline_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-    prompt = next(p for p in messages[0].parts if isinstance(p, UserPromptPart))
-    args = json.dumps(regex_baseline(str(prompt.content)))
-    return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, args)])
-
-
-# --- the task under test: the real agent, same code path as POST /extract --------
-async def extract(text: str) -> ItemExtraction:
-    result = await extract_agent.run(text, deps=Deps(), usage_limits=LIMITS)
+# --- the task under test: the real agent, same code path as POST /identify ----------
+async def identify(image_file: str) -> IdentificationOutput:
+    image = BinaryContent(
+        data=(IMAGES / image_file).read_bytes(), media_type="image/jpeg"
+    )
+    result = await identify_agent.run(
+        ["Identify the plant in this photo.", image],
+        deps=Deps(),
+        usage_limits=IDENTIFY_LIMITS,
+    )
     usage = result.usage
     increment_eval_metric("requests", usage.requests)  # cost drivers,
     increment_eval_metric("tokens", usage.total_tokens)  # shown per case
-    if usage.cost is not None:  # None when there is no pricing data (offline)
-        increment_eval_metric("cost_usd", float(usage.cost))
     return result.output
 
 
 def run(model: str = MODEL):
-    """Score `model` on every case. "test" means the offline regex baseline."""
+    """Score `model` on every case. "test" means the offline fixed-answer baseline."""
     offline = model == "test"
-    stand_in = FunctionModel(baseline_model) if offline else model
-    with extract_agent.override(model=stand_in):
+    stand_in = (
+        fixed_json_model(DEMO_IDENTIFICATION.model_dump_json()) if offline else model
+    )
+    with identify_agent.override(model=stand_in):
         return load_dataset().evaluate_sync(
-            extract,
-            name="regex-baseline" if offline else model,
+            identify,
+            name="fixed-answer-baseline" if offline else model,
             progress=False,
-            max_concurrency=2,  # be gentle with provider rate limits
+            max_concurrency=1,  # one CPU model: run cases one after another
         )
 
 
 if __name__ == "__main__":
     report = run()
     # Durations vary from run to run: hide them for the deterministic baseline.
-    report.print(width=100, include_durations=MODEL != "test")
+    report.print(width=110, include_durations=MODEL != "test")

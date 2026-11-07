@@ -1,14 +1,21 @@
 """The eval harness itself must keep working (CI runs it with the offline baseline)."""
 
-from evals.run_evals import load_dataset, regex_baseline, run
+from evals.run_evals import IMAGES, load_dataset, run, same_taxon
 
 
-def test_dataset_has_enough_cases():
-    assert 8 <= len(load_dataset().cases) <= 10
+def test_dataset_size_images_and_control_case():
+    dataset = load_dataset()
+    assert 8 <= len(dataset.cases) <= 10
+    assert len(dataset.evaluators) >= 3
+    for case in dataset.cases:
+        assert (IMAGES / case.inputs).is_file(), case.inputs
+    assert any(not case.metadata["is_plant"] for case in dataset.cases)  # control flow
 
 
-def test_dataset_has_at_least_three_evaluators():
-    assert len(load_dataset().evaluators) >= 3
+def test_same_taxon_rules():
+    assert same_taxon("Citrus × limon", "Citrus limon")
+    assert same_taxon("Bougainvillea", "Bougainvillea glabra")  # genus is enough
+    assert not same_taxon("Ocimum basilicum", "Ocimum tenuiflorum")
 
 
 def test_baseline_run_scores_every_case():
@@ -16,8 +23,9 @@ def test_baseline_run_scores_every_case():
     assert report.failures == []  # no case crashed
     assert len(report.cases) == len(load_dataset().cases)
     assert report.averages() is not None
-
-
-def test_regex_baseline_is_naive_on_purpose():
-    out = regex_baseline("URGENT: send the report")
-    assert (out["title"], out["priority"], out["tags"]) == ("URGENT", 5, ["work"])
+    rosemary = next(c for c in report.cases if c.name == "rosemary")
+    assert rosemary.assertions["Top1Species"].value is True
+    control = next(c for c in report.cases if c.name == "not_a_plant")
+    assert (
+        control.assertions["PlantDecision"].value is False
+    )  # the baseline always says "plant"
