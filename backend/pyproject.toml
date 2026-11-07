@@ -1,0 +1,26 @@
+[project]
+name = "eliezer-backend"
+version = "0.1.0"
+description = "FastAPI + Pydantic API; the only service that owns the database"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "fastapi[standard]==0.143.3",
+    "httpx==0.28.1",
+    "sqlmodel==0.0.48",
+    "tenacity==9.1.4",
+]
+
+[dependency-groups]
+dev = [
+    "httpx2==2.13.1",
+    "pytest==9.1.1",
+    "ruff>=0.17.4",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+filterwarnings = ["error"]
+
+[tool.fastapi]
+entrypoint = "app.main:app"
