@@ -1,0 +1,15 @@
+# Secrets and local settings
+.env
+
+# Python / uv
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+
+# Local SQLite data (Compose keeps it in the backend-data volume)
+data/
+*.db
+
+# Playwright artifacts
+test-results/

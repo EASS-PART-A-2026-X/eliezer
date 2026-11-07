@@ -1,0 +1,85 @@
+# compose.yaml (Compose Specification: no top-level "version:" key)
+name: eliezer
+
+services:
+  ai-service:
+    build: ./ai-service
+    # No host port: reachable on the Compose network, not published at localhost:8001.
+    env_file:
+      - path: .env # your real settings and keys (git-ignored)
+        required: false # a clean checkout has no .env and still starts
+    environment:
+      AI_MODEL: ${AI_MODEL:-test} # no key, no cost unless you choose a model
+      PYDANTIC_AI_NO_BANNER: "1"
+    extra_hosts:
+      # Lets a model server on the host (e.g. Ollama) be reached on Linux too.
+      - "host.docker.internal:host-gateway"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    healthcheck:
+      # Slim images have no curl, so ask Python's standard library instead.
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen("http://localhost:8001/health", timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  backend:
+    build: ./backend
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000" # host IP:host port:container port
+    environment:
+      DATABASE_URL: sqlite:////app/data/app.db # 4 slashes = absolute path
+      AI_SERVICE_URL: http://ai-service:8001 # the service name is a DNS name
+    volumes:
+      - backend-data:/app/data # survives "down"; "down -v" deletes it
+    depends_on:
+      ai-service:
+        condition: service_healthy
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen("http://localhost:8000/health", timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-8501}:8501"
+    environment:
+      BACKEND_URL: http://backend:8000 # Streamlit calls the API server-side
+    depends_on:
+      backend:
+        condition: service_healthy
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen("http://localhost:8501/_stcore/health", timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  backend-data:

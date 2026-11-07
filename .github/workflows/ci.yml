@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: this workflow only reads the repository.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false # show every failing service, not just the first
+      matrix:
+        service: [backend, ai-service, frontend]
+    defaults:
+      run:
+        working-directory: ${{ matrix.service }}
+    steps:
+      # Actions are pinned by full commit SHA (a tag can be moved; a SHA cannot).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.1" # pin the tool too, not just the libraries
+          enable-cache: true
+          working-directory: ${{ matrix.service }}
+      - run: uv sync --locked # fails if uv.lock is out of date
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest
+        env:
+          AI_MODEL: test # never call a paid model in CI
+
+  compose:
+    name: compose smoke test
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # A clean checkout must start with zero secrets (no .env present).
+      - run: docker compose config --quiet
+      - run: docker compose up --build --wait --wait-timeout 180
+      - name: Smoke test
+        run: |
+          curl --fail --silent --show-error http://localhost:8000/health
+          curl --fail --silent --show-error http://localhost:8501/_stcore/health
+          curl --fail --silent --show-error -X POST \
+            -H "Content-Type: application/json" \
+            -d '{"text": "URGENT: send the quarterly report"}' \
+            http://localhost:8000/items/from-text
+      - if: failure()
+        run: docker compose logs
+      - if: always()
+        run: docker compose down -v
+
+  audit:
+    name: dependency audit (advisory)
+    # Advisory: a new advisory can turn this red with no code change.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.1"
+      - name: Known vulnerabilities in locked dependencies (OSV)
+        run: |
+          status=0
+          for service in backend ai-service frontend; do
+            (cd "$service" && uv audit --locked --preview-features audit-command) || status=1
+          done
+          exit "$status"
