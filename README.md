@@ -35,7 +35,7 @@ browser
   -> frontend    (Streamlit)               :8501
   -> backend     (FastAPI + Pydantic)      :8000  -> PostgreSQL "db" (only the backend)
   -> ai-service  (FastAPI + Pydantic AI)   :8001  (called only by the backend; not published)
-                                                   -> Ollama on the host (optional real model)
+                                                   -> ollama (the real model; idle in demo mode)
 ```
 
 Only the backend reads or writes the database. The frontend never calls the AI service or the database, and the AI service never opens the database: it returns candidates that the backend validates before anything is saved. PostgreSQL and Ollama are infrastructure, not application services.
@@ -46,17 +46,19 @@ Only the backend reads or writes the database. The frontend never calls the AI s
 
 ## Setup
 
-Requirements: Docker with Compose v2; [uv](https://docs.astral.sh/uv/) for local runs and tests (Python 3.14).
+Requirements: Docker with Compose 2.24 or newer (`docker compose version`; Docker Desktop on macOS, Windows or Linux works, on Intel/AMD or Apple Silicon); [uv](https://docs.astral.sh/uv/) for local runs and tests (Python 3.14). The real model needs about 6 GB of free RAM and 5 GB of disk; on a smaller machine use demo mode (`AI_MODEL=test`).
 
 ```bash
-cp .env.example .env   # optional: the stack also starts without it (demo mode)
+cp .env.example .env   # optional: the stack also starts without it (real model)
 ```
 
 | Setting | Where | Default | Meaning |
 |---|---|---|---|
 | `POSTGRES_PASSWORD` | `.env` | `eliezer-dev` | password of the `db` service; set your own |
-| `AI_MODEL` | `.env` | `test` | `test` = **demo mode** (fixed stand-in answers, no key, no cost); `ollama:gemma4:e2b` = real model |
-| `OLLAMA_BASE_URL` | `.env` | `http://host.docker.internal:11434/v1` | where the ai-service finds Ollama |
+| `AI_MODEL` | `.env` | `ollama:gemma4:e2b` | the real model in the `ollama` container (see [Real model and demo mode](#real-model-and-demo-mode)); `test` = **demo mode** (fixed stand-in answers, no download, no key, no cost) |
+| `OLLAMA_BASE_URL` | `.env` | `http://ollama:11434/v1` | where the ai-service finds Ollama; `http://host.docker.internal:11434/v1` for Ollama on the host |
+| `OLLAMA_PORT` | `.env` | `11435` | loopback port of the Ollama container, for the evaluation |
+| `OLLAMA_NUM_THREAD` | `.env` | `4` | CPU threads the model uses (see [Speed](#speed-on-a-laptop-cpu)) |
 | `GARDEN_REGION` | `.env` | `Israel (Mediterranean climate)` | region used in the AI instructions |
 | `BACKEND_PORT` / `FRONTEND_PORT` | `.env` | `8000` / `8501` | host ports, if the defaults are taken |
 | `DATABASE_URL` | backend | Compose: Postgres; image/local default: `sqlite:///./data/app.db` | where data lives |
@@ -70,8 +72,9 @@ docker compose up --build --wait
 
 - App: <http://localhost:8501> · API docs: <http://localhost:8000/docs> · health: <http://localhost:8000/health>
 - The first start loads the plant catalog (~1,500 plants) and a 3-plant demo garden; the backend logs `seeded … catalog plants`.
+- The first start also downloads the model (4.6 GB) in the background: `docker compose logs -f ollama`. The garden works at once; photo identification and AI care answer "AI unavailable" until the download is done. Later starts skip it.
 - `docker compose down` stops everything and **keeps** your data (the `db-data` volume).
-- `docker compose down -v` **deletes** your garden and the AI-written care. The next start reloads the catalog and demo garden.
+- `docker compose down -v` **deletes** your garden, the AI-written care and the downloaded model. The next start reloads the catalog and demo garden, and downloads the model again.
 - Backup: `docker compose exec db pg_dump -U eliezer eliezer > backup.sql` · restore into a fresh stack: `docker compose exec -T db psql -U eliezer eliezer < backup.sql`
 
 ### Run the backend alone (EX1 check, SQLite)
@@ -100,7 +103,7 @@ Every command runs offline, with no API key and no model calls.
 | Service | Command (from the service folder) | What it covers |
 |---|---|---|
 | backend | `uv run pytest` | catalog search (EN/HE/Latin), status codes, garden countdown with a frozen clock, watering, photos and upload checks, identify matching, retry policy, AI care validated and stored, restart persistence, seed, catalog files, contract |
-| ai-service | `uv run pytest` | demo mode, identify and care validators (each forces a retry), 422/429/500/502/504 mapping, tools, no photo or text in logs, eval harness |
+| ai-service | `uv run pytest` | demo mode, identify validator (repairs a fixable answer, retries an unusable one), care validator (forces a retry), thinking off for Ollama models, 422/429/500/502/504 mapping, tools, no photo or text in logs, eval harness |
 | frontend | `uv run pytest` | AppTest flows in both languages: plant cards (photo or placeholder) open a details modal, RTL CSS, watering, care request, adding a photo later, remove with confirmation, identify → add (including new catalog plants), one-tap search → add, friendly errors, lost reply; UI → `api.py` boundary; i18n keys and placeholders |
 | frontend (browser) | `uv run pytest e2e --base-url http://localhost:8501 --browser-channel chrome` | needs the running stack: search → add → details modal → nickname → reload → tap the card → water → remove; Hebrew toggle → RTL; phone width shows 2 cards per row with no sideways scrolling. Without Chrome: `uv run playwright install chromium` and drop `--browser-channel chrome` |
 | lint (each service) | `uv run ruff check . && uv run ruff format --check .` | |
@@ -148,14 +151,25 @@ uv run python -c "import json; from app.main import app; print(json.dumps(app.op
 | invalid interval via the API (e.g. 0 days) | "Please fix: watering_interval_days: …" | correct the field |
 | reply lost after "I watered it" | "The backend did not answer in time. Your change may have been saved. Reload the page and check before trying again." | reload and check |
 
-## Real-model run (optional)
+## Real model and demo mode
 
-Automated tests never call a real model. To use Gemma 4 E2B:
+`docker compose up` uses **Gemma 4 E2B** in the `ollama` container by default; no `.env` needed. The first start downloads the model into the `ollama-models` volume (4.6 GB; `docker compose logs -f ollama`). Until it is done, photo identification and AI care answer "AI unavailable"; the garden works meanwhile. It needs about 5–6 GB of free RAM while the model runs and about 5 GB of disk. No GPU is needed: a photo takes about 15–25 seconds on a laptop CPU, plus about 20 seconds when the model has to load first (it stays loaded for 30 minutes after use).
 
-1. Install [Ollama](https://ollama.com/download) **0.20.6 or newer** (earlier 0.20.x releases had Gemma 4 tool-calling bugs), then `ollama pull gemma4:e2b` (4.6 GB download; about 5–6 GB of free RAM while it runs; no GPU needed, but expect tens of seconds per photo on a CPU).
-2. Make it reachable from Docker without exposing it to your network (course local-inference guide, "Reach a host model server from Compose"): on Linux, bind Ollama to the Docker bridge only — `ip -4 addr show docker0` (usually `172.17.0.1`), then `OLLAMA_HOST=172.17.0.1:11434 ollama serve` (or set it with `sudo systemctl edit ollama`). On Docker Desktop, keep the default.
-3. In `.env`: `AI_MODEL=ollama:gemma4:e2b` (and `OLLAMA_BASE_URL` only if you changed the default), then `docker compose up --build --wait`.
-4. Send one photo first to warm the model up; the first answer after loading is the slowest.
+**Demo mode** (`AI_MODEL=test` in `.env`): fixed stand-in answers (always rosemary, lavender, thyme), no download, no key, no cost; the `ollama` container stays idle. CI and `scripts/clean-checkout.sh` run in demo mode, and automated tests never call a real model.
+
+The image (`ollama/Dockerfile`) is the official Ollama release, pinned to 0.40.15 and checked against its published SHA-256, without the GPU libraries: 234 MB instead of the official image's 3.4 GB download. On a machine with an NVIDIA GPU, replace `build: ./ollama` with `image: ollama/ollama:0.40.15` and add a GPU reservation (Docker docs, "GPU support in Compose").
+
+**Ollama on the host instead:** install [Ollama](https://ollama.com/download) 0.20.6 or newer (earlier 0.20.x releases had Gemma 4 tool-calling bugs) and `ollama pull gemma4:e2b`. Make it reachable from Docker without exposing it to your network (course local-inference guide, "Reach a host model server from Compose"): on Linux, bind it to the Docker bridge only, usually `OLLAMA_HOST=172.17.0.1:11434` (set it with `sudo systemctl edit ollama`); on Docker Desktop, keep the default. Then set `OLLAMA_BASE_URL=http://host.docker.internal:11434/v1` in `.env`.
+
+### Speed on a laptop CPU
+
+Measured on an Intel Core 7 150U laptop (12 threads, Docker Desktop), identifying one photo went from timing out after 150 s to about 15–25 s with three settings:
+
+| Setting | Where | Why |
+|---|---|---|
+| 4 CPU threads (`OLLAMA_NUM_THREAD`) | `ollama/entrypoint.sh` stores it in the model | Ollama starts one thread per CPU; in Docker Desktop's VM on a busy laptop the threads keep waiting for each other. 12 threads wrote 0.3–0.7 tokens/s, 4 threads 7.6. On a machine with many free cores, try more. |
+| thinking off | `model_settings()` in `ai-service/app/agents.py` | Through the OpenAI API, Gemma 4 thinks before it answers: ~800 hidden tokens per photo, two minutes on this CPU |
+| repair before retry, compact JSON | `check_identification` and the identify instructions | a retry resends the photo and doubles the time, so one malformed guess among good ones is dropped and the order is fixed in code; indentation costs tokens |
 
 Per-request caps (`ai-service/app/agents.py`): identify ≤3 model requests and 12,000 tokens; care ≤6 requests, 6 tool calls and 16,000 tokens.
 
@@ -166,15 +180,18 @@ Dataset: 10 cases in `ai-service/evals/cases.yaml` — 9 plant photos and 1 non-
 | Date | Model / configuration | Cases | Assertions passed | GenusMatch (avg) | Notes |
 |---|---|---|---|---|---|
 | 2026-11-07 | fixed-answer baseline (`AI_MODEL=test`: always "rosemary") | 10 | 62.0% | 0.100 | deterministic stand-in, **not** model quality |
-| — | `ollama:gemma4:e2b` | — | not run yet | — | run `AI_MODEL=ollama:gemma4:e2b OLLAMA_BASE_URL=http://localhost:11434/v1 uv run python -m evals.run_evals` and record the result here |
+| 2026-11-08 | `ollama:gemma4:e2b` (Ollama 0.40.15 container, CPU only, 4 threads, thinking off) | 10 | 88.0% | 0.700 | one model request per photo, 16.7 s average on an Intel Core 7 150U laptop; wrong genus for rosemary (lavender), fig (avocado) and pothos. Rerun: with the stack running, `AI_MODEL=ollama:gemma4:e2b OLLAMA_BASE_URL=http://localhost:11435/v1 uv run python -m evals.run_evals` in `ai-service/` |
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `port is already allocated` | 8000 or 8501 is in use | set `BACKEND_PORT` / `FRONTEND_PORT` in `.env` |
-| identify always shows Rosemary / Lavender / Thyme and a "Demo mode" warning | `AI_MODEL=test` | expected; set a real model to identify real photos |
-| identify returns "unavailable" with a real model | Ollama not running or not reachable from Docker; model not pulled | `ollama list`; check `OLLAMA_HOST` and `OLLAMA_BASE_URL`; `docker compose logs ai-service` shows the cause |
+| `port is already allocated` | 8000, 8501 or 11435 is in use | set `BACKEND_PORT` / `FRONTEND_PORT` / `OLLAMA_PORT` in `.env` |
+| `env_file` or `depends_on` errors when Compose reads the file | Compose older than 2.24 | update Docker Desktop or the Compose plugin |
+| the model fails to load on macOS or Windows | Docker Desktop gives its VM too little memory | Docker Desktop → Settings → Resources: give it at least 8 GB, or use demo mode |
+| identify always shows Rosemary / Lavender / Thyme and a "Demo mode" warning | `AI_MODEL=test` | expected in demo mode; remove the line from `.env` for the real model |
+| identify says "AI unavailable" right after the first start | the model is still downloading, or the download failed (no network, disk full) | `docker compose logs ollama`; after a failure, fix the cause and run `docker compose restart ollama` (the download resumes) |
+| identify returns "unavailable" with a real model | Ollama not running or not reachable; the model ran out of memory | `docker compose ps` (is `ollama` healthy?); `docker compose logs ollama ai-service` shows the cause; close memory-hungry apps |
 | every AI call returns 502 after a schema change | the contract drifted | regenerate `ai_openapi.json` and run the backend tests |
 
 ## Data sources

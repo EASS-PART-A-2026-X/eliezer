@@ -34,6 +34,9 @@ if [ -e .env ]; then
   exit 1
 fi
 cp .env.example .env
+# Demo mode for this check (overrides .env): deterministic answers, and no 4.6 GB
+# model download into a throwaway volume.
+export AI_MODEL=test
 
 cleanup() {
   status=$? # the exit status of the script, saved before anything else runs

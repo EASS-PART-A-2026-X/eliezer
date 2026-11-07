@@ -28,12 +28,27 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RequestUsage
 
-from app.schemas import CareGuide, IdentificationOutput
+from app.schemas import Candidate, CareGuide, IdentificationOutput
 
 AI_MODEL = os.getenv("AI_MODEL", "test")
 DEMO = AI_MODEL == "test"
 MODEL_LABEL = "demo" if DEMO else AI_MODEL
 GARDEN_REGION = os.getenv("GARDEN_REGION", "Israel (Mediterranean climate)")
+
+
+def model_settings(temperature: float, model: str = AI_MODEL) -> dict:
+    """Sampling settings for an agent.
+
+    Through Ollama's OpenAI API, Gemma 4 thinks before it answers unless told not
+    to: about 800 hidden tokens per photo, two minutes on a laptop CPU, for jobs
+    that do not need it. OpenAI's own non-reasoning models reject the setting, so
+    it is sent to Ollama models only.
+    """
+    no_thinking = (
+        {"openai_reasoning_effort": "none"} if model.startswith("ollama:") else {}
+    )
+    return {"temperature": temperature, **no_thinking}
+
 
 HEBREW = re.compile(r"[֐-׿]")
 SCIENTIFIC = re.compile(r"^[A-Z][a-z]+( [a-z×.\-]+)*$")
@@ -130,9 +145,10 @@ identify_agent = Agent(
         "most likely first, each with a confidence from 0 to 1. Give the accepted "
         "scientific (Latin) name, the common English name, and the common Hebrew "
         "name written in Hebrew letters. If the photo does not show a plant, set "
-        "is_plant to false and return no candidates."
+        "is_plant to false and return no candidates. Reply with compact JSON on one "
+        "line, without indentation."  # every space is a token: ~20% faster on a CPU
     ),
-    model_settings={"temperature": 0.2},
+    model_settings=model_settings(temperature=0.2),
     defer_model_check=True,  # no provider key needed at import time (tests!)
     retries=2,
 )
@@ -146,29 +162,35 @@ def identify_region(ctx: RunContext[Deps]) -> str:
     )
 
 
+def candidate_problem(c: Candidate) -> str | None:
+    if not SCIENTIFIC.match(c.scientific_name):
+        return (
+            f"{c.scientific_name!r} is not a scientific name like 'Salvia rosmarinus'."
+        )
+    if not HEBREW.search(c.name_he):
+        return f"name_he for {c.scientific_name} must be in Hebrew letters."
+    return None
+
+
 @identify_agent.output_validator
 def check_identification(
     ctx: RunContext[Deps], output: IdentificationOutput
 ) -> IdentificationOutput:
+    """Repair what code can repair; ask the model again only when nothing usable is
+    left. A retry resends the photo and costs as long as the first answer (about
+    half a minute on a laptop CPU)."""
     if not output.is_plant:
         if output.candidates:
             raise ModelRetry("is_plant is false, so return an empty candidates list.")
         return output
     if not output.candidates:
         raise ModelRetry("is_plant is true: return at least one candidate.")
-    confidences = [c.confidence for c in output.candidates]
-    if confidences != sorted(confidences, reverse=True):
-        raise ModelRetry("Order the candidates from most to least likely.")
-    for c in output.candidates:
-        if not SCIENTIFIC.match(c.scientific_name):
-            raise ModelRetry(
-                f"{c.scientific_name!r} is not a scientific name like 'Salvia rosmarinus'."
-            )
-        if not HEBREW.search(c.name_he):
-            raise ModelRetry(
-                f"name_he for {c.scientific_name} must be in Hebrew letters."
-            )
-    return output
+    problems = [candidate_problem(c) for c in output.candidates]
+    usable = [c for c, problem in zip(output.candidates, problems) if problem is None]
+    if not usable:  # one malformed guess among good ones is dropped instead
+        raise ModelRetry(" ".join(p for p in problems if p))
+    usable.sort(key=lambda c: c.confidence, reverse=True)  # most likely first
+    return output.model_copy(update={"candidates": usable})
 
 
 IDENTIFY_LIMITS = UsageLimits(request_limit=3, total_tokens_limit=12_000)
@@ -188,7 +210,7 @@ care_agent = Agent(
         "then the same steps in natural Hebrew written in Hebrew letters. Plain "
         "text only: no Markdown and no English words inside the Hebrew steps."
     ),
-    model_settings={"temperature": 0.3},
+    model_settings=model_settings(temperature=0.3),
     defer_model_check=True,
     retries=2,
 )

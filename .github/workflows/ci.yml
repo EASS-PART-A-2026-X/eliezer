@@ -43,6 +43,10 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # Demo mode: deterministic answers for the smoke test, and no 4.6 GB model
+      # download (the ollama container still builds and starts, idle).
+      AI_MODEL: test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

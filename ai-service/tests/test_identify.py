@@ -17,7 +17,7 @@ from pydantic_ai import (
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from app import main
-from app.agents import DEMO_IDENTIFICATION, identify_agent
+from app.agents import DEMO_IDENTIFICATION, identify_agent, model_settings
 from tests.conftest import JPEG_B64, png_bytes
 
 ROSEMARY = {
@@ -125,9 +125,6 @@ def test_not_a_plant_returns_no_candidates(client):
             {"is_plant": True, "candidates": []}, id="plant-without-candidates"
         ),
         pytest.param(
-            {"is_plant": True, "candidates": [LAVENDER, ROSEMARY]}, id="wrong-order"
-        ),
-        pytest.param(
             {"is_plant": True, "candidates": [{**ROSEMARY, "name_he": "Rosemary"}]},
             id="hebrew-name-in-english",
         ),
@@ -145,6 +142,17 @@ def test_validator_sends_bad_answers_back(client, bad):
         r = post(client)
     assert r.status_code == 200  # the second, valid answer
     assert r.json()["candidates"][0]["scientific_name"] == "Salvia rosmarinus"
+
+
+def test_fixable_answers_are_repaired_without_asking_again(client):
+    # One answer only: a second model call would exhaust the script and fail.
+    sweet_basil = {**LAVENDER, "scientific_name": "Sweet Basil"}  # seen with Gemma
+    answer = {"is_plant": True, "candidates": [LAVENDER, sweet_basil, ROSEMARY]}
+    with identify_agent.override(model=scripted([answer])):
+        r = post(client)
+    assert r.status_code == 200
+    names = [c["scientific_name"] for c in r.json()["candidates"]]
+    assert names == ["Salvia rosmarinus", "Lavandula angustifolia"]  # sorted, cleaned
 
 
 def test_persistent_junk_is_502_after_retries(client):
@@ -213,3 +221,13 @@ def test_logs_do_not_contain_the_photo(client, caplog):
     assert post(client).status_code == 200
     assert "identify ok" in caplog.text
     assert JPEG_B64[:40] not in caplog.text
+
+
+def test_ollama_models_answer_without_thinking():
+    # Gemma 4 on Ollama otherwise writes ~800 hidden tokens before every answer.
+    assert model_settings(0.2, "ollama:gemma4:e2b") == {
+        "temperature": 0.2,
+        "openai_reasoning_effort": "none",
+    }
+    # Other providers' non-reasoning models reject the setting.
+    assert model_settings(0.2, "openai:gpt-4.1") == {"temperature": 0.2}
